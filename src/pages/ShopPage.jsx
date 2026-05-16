@@ -704,24 +704,19 @@ function ProductModal({ product, onClose, isAdmin, onEditClick, isStoreProduct }
               </button>
             )}
 
-            {owned && product.photopeaTemplateId && (!product.editableFields || product.editableFields.length === 0) && (
+            {owned && product.psdTemplateId && (!product.editableFields || product.editableFields.length === 0) && (
               <button
-                onClick={() => { onClose(); navigate(`/photopea/${product.id}`) }}
+                onClick={() => { onClose(); navigate(`/psd/${product.id}`) }}
                 className="w-full btn-primary py-3 text-sm flex items-center justify-center gap-2"
               >
-                ✦ Mở trong Photopea
+                ✦ Mở PSD editor
               </button>
             )}
-            {owned && product.editableFields?.length > 0 && (
+            {owned && product.psdTemplateId && product.editableFields?.length > 0 && (
               <button
                 onClick={() => {
                   onClose()
-                  // Photopea-template products get the dedicated editor that
-                  // talks to the embedded Photopea iframe; everything else
-                  // falls back to the legacy Konva-based customer editor.
-                  navigate(product.photopeaTemplateId
-                    ? `/photopea/${product.id}`
-                    : `/editor/${product.id}`)
+                  navigate(`/psd/${product.id}`)
                 }}
                 className="w-full btn-primary py-3 text-sm flex items-center justify-center gap-2"
               >

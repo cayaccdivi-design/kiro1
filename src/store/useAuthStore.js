@@ -15,6 +15,11 @@ function loadUsers() {
   try { return JSON.parse(localStorage.getItem(USERS_KEY)) || [] } catch { return [] }
 }
 
+function persistUserSync(updatedUser, users) {
+  localStorage.setItem(USERS_KEY, JSON.stringify(users))
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(updatedUser))
+}
+
 export const useAuthStore = create((set, get) => ({
   user: loadAuth(),
   users: loadUsers(),
@@ -33,6 +38,7 @@ export const useAuthStore = create((set, get) => ({
       email,
       password,
       balance: 0,
+      paidExports: {},        // { [productId]: timestamp } — permanent unlock
       createdAt: new Date().toISOString(),
       avatar: `https://api.dicebear.com/9.x/avataaars/svg?seed=${email}`,
     }
@@ -97,5 +103,27 @@ export const useAuthStore = create((set, get) => ({
     localStorage.setItem(STORAGE_KEY, JSON.stringify(updatedUser))
     set({ users: updated, user: updatedUser })
     return true
+  },
+
+  // ── Per-product export unlock ───────────────────────────────────────
+  // Once the customer pays the export fee for a template-backed product,
+  // that unlock is permanent across sessions, devices (if logged in) and
+  // formats. Admin always returns true.
+  hasExportPaid: (productId) => {
+    const u = get().user
+    if (!u) return false
+    if (u.email === 'finnlive246@gmail.com') return true
+    return !!(u.paidExports && u.paidExports[productId])
+  },
+
+  markExportPaid: (productId) => {
+    const u = get().user
+    if (!u) return
+    if (u.email === 'finnlive246@gmail.com') return // no-op for admin
+    const paidExports = { ...(u.paidExports || {}), [productId]: Date.now() }
+    const updatedUser = { ...u, paidExports }
+    const users = get().users.map(x => x.id === u.id ? { ...x, paidExports } : x)
+    persistUserSync(updatedUser, users)
+    set({ users, user: updatedUser })
   },
 }))
