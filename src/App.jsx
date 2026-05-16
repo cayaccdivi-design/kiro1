@@ -19,9 +19,9 @@ import TopupPage from './pages/TopupPage'
 // ── Code-split (heavy / rarely visited) ─────────────────────────────────
 // Each chunk gets its own JS bundle so the initial page load stays small.
 // Wrapped in Suspense below.
-const RemoveBgPage          = lazy(() => import('./pages/RemoveBgPage'))
-const PhotopeaAdminPage     = lazy(() => import('./pages/PhotopeaAdminPage'))
-const PhotopeaCustomerPage  = lazy(() => import('./pages/PhotopeaCustomerPage'))
+const RemoveBgPage     = lazy(() => import('./pages/RemoveBgPage'))
+const PsdAdminPage     = lazy(() => import('./pages/PsdAdminPage'))
+const PsdCustomerPage  = lazy(() => import('./pages/PsdCustomerPage'))
 
 function ProtectedRoute({ children }) {
   const { user } = useAuthStore()
@@ -69,9 +69,9 @@ export default function App() {
         <Route path="/announcements" element={<AnnouncementsPage />} />
         <Route path="/source" element={<SourcePage />} />
         <Route path="/downloads" element={<ProtectedRoute><DownloadsPage /></ProtectedRoute>} />
-        <Route path="/admin/photopea" element={<ProtectedRoute>{lazy_(PhotopeaAdminPage)}</ProtectedRoute>} />
+        <Route path="/admin/psd" element={<ProtectedRoute>{lazy_(PsdAdminPage)}</ProtectedRoute>} />
       </Route>
-      <Route path="/photopea/:productId" element={<ProtectedRoute>{lazy_(PhotopeaCustomerPage)}</ProtectedRoute>} />
+      <Route path="/psd/:productId" element={<ProtectedRoute>{lazy_(PsdCustomerPage)}</ProtectedRoute>} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   )

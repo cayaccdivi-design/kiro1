@@ -18,7 +18,7 @@ const NAV_ITEMS = [
   { to: '/resources',       icon: FolderOpen,      label: 'Tài nguyên' },
   { to: '/source',          icon: Code2,           label: 'Mã nguồn' },
   { to: '/downloads',       icon: Download,        label: 'Đã tải',         loginOnly: true },
-  { to: '/admin/photopea',  icon: Layers,          label: 'Photopea Admin', badge: 'NEW', adminOnly: true },
+  { to: '/admin/psd',       icon: Layers,          label: 'PSD Admin',      badge: 'NEW', adminOnly: true },
 ]
 
 // Utility cluster — secondary destinations rendered as small icon buttons

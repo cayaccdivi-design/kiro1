@@ -1,23 +1,24 @@
-// PhotopeaCustomerPage — read-only-on-locked-layers Photopea editor
-// for customers who own a template-backed shop product.
+// PsdCustomerPage — in-browser PSD editor for customers.
 //
-// Flow:
-//   1. Resolve template id from product.photopeaTemplateId.
-//   2. Load PSD into Photopea iframe (data URL from the saved template).
-//   3. Render input form for every UNLOCKED layer that has a known
-//      role (text_title, text_price, text_name, avt_png, ...). Labels
-//      respect admin overrides (template.customLabels).
-//   4. As the user types / picks images, push the change into Photopea
-//      via scriptReplaceText / scriptReplaceImage. Clicking a field
-//      also focuses the matching layer inside Photopea.
-//   5. Reset reverts the iframe to the original PSD by reloading it.
-//   6. Two export buttons:
-//        • "Xem thử" — free, watermarked PNG (admin can disable).
-//        • "Tải về" — gated by template.exportFee. Once paid, the
-//          unlock is permanent for THAT product (any format, any
-//          session) via useAuthStore.paidExports.
-//   7. Customer-typed values are auto-saved per (user × product) so a
-//      reload doesn't lose work.
+// Once a customer owns a PSD-template-backed product, this page
+// loads the template (parsed bitmap layers + per-template policy)
+// and lets them:
+//   • edit text on layers named text_*, title_logo, text_logo
+//   • swap images on layers named character_png, img_png, avt_png,
+//     logo (and legacy aliases nvat_png / image_1 / logo_1)
+//   • see a live composite canvas as they edit
+//   • download a watermarked PNG for free (admin can disable)
+//   • pay the admin-defined fee once to unlock clean PNG / JPG /
+//     WebP downloads forever, on any device after re-login
+//
+// Locked layers (admin-set or named lock_*) never appear in the
+// form. The renderer still draws their bitmap so the final image
+// matches the original PSD.
+//
+// We do NOT use Photopea, an iframe, or any third-party host. The
+// only trip outside the browser is the @webtoon/psd parser, which
+// already ran on the admin side; the customer page only needs the
+// rendered canvas and the parsed-layers JSON the admin published.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
@@ -28,29 +29,24 @@ import {
 } from 'lucide-react'
 import clsx from 'clsx'
 
-import PhotopeaFrame from '../components/photopea/PhotopeaFrame'
+import { renderTemplateToCanvas } from '../utils/psdRenderer'
 import {
-  scriptReplaceText, scriptReplaceImage, scriptExport, scriptSelectLayer,
-  SCRIPT_LIST_LAYERS,
-} from '../utils/photopeaScripts'
+  detectLayerRole, isLockLayerName,
+} from '../utils/layerNaming'
+import { useFontStore } from '../utils/fontManager'
+import { watermarkImageBuffer } from '../utils/watermark'
 import { useAppStore } from '../store/useAppStore'
 import { useAuthStore } from '../store/useAuthStore'
 import { useShopStore } from '../store/useShopStore'
-import { usePhotopeaStore } from '../store/usePhotopeaStore'
-import { detectLayerRole, isLockLayerName } from '../utils/layerNaming'
-import { watermarkImageBuffer } from '../utils/watermark'
-
-const CARD = {
-  background: 'rgba(255,255,255,0.04)',
-  border: '1px solid rgba(255,255,255,0.08)',
-  backdropFilter: 'blur(24px) saturate(180%)',
-}
+import { usePsdStore } from '../store/usePsdStore'
 
 // ── Supported export formats ──────────────────────────────────────────
+// We always render to PNG via canvas, then optionally re-encode to
+// the selected mime. JPG flattens onto white because it has no alpha.
 const EXPORT_FORMATS = [
-  { id: 'png', label: 'PNG', mime: 'image/png',  ext: 'png',  desc: 'Trong suốt, chất lượng cao' },
-  { id: 'jpg', label: 'JPG', mime: 'image/jpeg', ext: 'jpg',  desc: 'Nhẹ, không hỗ trợ trong suốt' },
-  { id: 'png', label: 'WebP', mime: 'image/webp', ext: 'webp', desc: 'Nhẹ nhất, hỗ trợ trong suốt', reencode: 'webp' },
+  { id: 'png',  label: 'PNG',  mime: 'image/png',  ext: 'png',  desc: 'Trong suốt, chất lượng cao' },
+  { id: 'jpg',  label: 'JPG',  mime: 'image/jpeg', ext: 'jpg',  desc: 'Nhẹ, không hỗ trợ trong suốt' },
+  { id: 'webp', label: 'WebP', mime: 'image/webp', ext: 'webp', desc: 'Nhẹ nhất, hỗ trợ trong suốt' },
 ]
 
 function readFileAsDataURL(file) {
@@ -62,8 +58,6 @@ function readFileAsDataURL(file) {
   })
 }
 
-function bufferToBlob(buf, mime) { return new Blob([buf], { type: mime }) }
-
 function downloadBlob(blob, filename) {
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
@@ -72,43 +66,34 @@ function downloadBlob(blob, filename) {
   setTimeout(() => URL.revokeObjectURL(url), 4000)
 }
 
-// Re-encode a PNG ArrayBuffer to a different mime (jpg / webp).
-async function reencodeToMime(buffer, srcMime, targetMime, quality = 0.92) {
-  const blob = new Blob([buffer], { type: srcMime })
-  const url = URL.createObjectURL(blob)
-  try {
-    const img = await new Promise((resolve, reject) => {
-      const i = new Image()
-      i.crossOrigin = 'anonymous'
-      i.onload = () => resolve(i)
-      i.onerror = reject
-      i.src = url
-    })
-    const canvas = document.createElement('canvas')
-    canvas.width = img.naturalWidth
-    canvas.height = img.naturalHeight
-    const ctx = canvas.getContext('2d')
-    // For JPG, fill white first since JPG has no alpha.
-    if (targetMime === 'image/jpeg') {
-      ctx.fillStyle = '#ffffff'
-      ctx.fillRect(0, 0, canvas.width, canvas.height)
-    }
-    ctx.drawImage(img, 0, 0)
-    return await new Promise((resolve, reject) => {
-      canvas.toBlob(
+function canvasToBlob(canvas, mime, quality = 0.92) {
+  return new Promise((resolve, reject) => {
+    // For JPG, pre-paint white so transparent areas don't go black.
+    if (mime === 'image/jpeg') {
+      const ctx = canvas.getContext('2d')
+      const composed = document.createElement('canvas')
+      composed.width = canvas.width
+      composed.height = canvas.height
+      const cctx = composed.getContext('2d')
+      cctx.fillStyle = '#ffffff'
+      cctx.fillRect(0, 0, composed.width, composed.height)
+      cctx.drawImage(canvas, 0, 0)
+      composed.toBlob(
         (b) => (b ? resolve(b) : reject(new Error('toBlob null'))),
-        targetMime,
-        quality,
+        mime, quality,
       )
-    })
-  } finally {
-    URL.revokeObjectURL(url)
-  }
+      return
+    }
+    canvas.toBlob(
+      (b) => (b ? resolve(b) : reject(new Error('toBlob null'))),
+      mime, quality,
+    )
+  })
 }
 
-// localStorage helpers for per-(user × product) value persistence.
+// localStorage helpers — survive reload, scoped per (user × product).
 function valuesKey(userId, productId) {
-  return `nova_photopea_values:${userId || 'guest'}:${productId}`
+  return `nova_psd_values:${userId || 'guest'}:${productId}`
 }
 function loadValues(userId, productId) {
   try { return JSON.parse(localStorage.getItem(valuesKey(userId, productId))) || {} }
@@ -119,23 +104,13 @@ function saveValues(userId, productId, values) {
   catch { /* quota — silently drop */ }
 }
 
-// ── Field renderer ─────────────────────────────────────────────────────
-function CustomField({ layer, role, value, onTextChange, onImageChange, onFocus, locked }) {
+// ── Per-field input ────────────────────────────────────────────────────
+function CustomField({ layer, role, value, onTextChange, onImageChange }) {
   const fileRef = useRef(null)
-
-  if (locked) {
-    return (
-      <div className="px-3 py-2.5 rounded-xl text-xs flex items-center gap-2"
-        style={{ background: 'rgba(239,68,68,0.06)', border: '1px solid rgba(239,68,68,0.18)' }}>
-        <Lock size={11} className="text-rose-400 flex-shrink-0" />
-        <span className="text-rose-300/80">{role.label} · admin đã khoá</span>
-      </div>
-    )
-  }
 
   if (role.type === 'text') {
     return (
-      <div onClick={onFocus}>
+      <div>
         <label className="text-[10px] text-white/40 uppercase tracking-wider mb-1 flex items-center gap-1">
           <Type size={10} className="text-violet-300" /> {role.label}
         </label>
@@ -144,16 +119,14 @@ function CustomField({ layer, role, value, onTextChange, onImageChange, onFocus,
           rows={2}
           value={value ?? ''}
           onChange={(e) => onTextChange(e.target.value)}
-          onFocus={onFocus}
           placeholder={layer.text || ''}
         />
       </div>
     )
   }
 
-  // Image
   return (
-    <div onClick={onFocus}>
+    <div>
       <label className="text-[10px] text-white/40 uppercase tracking-wider mb-1 flex items-center gap-1">
         <ImageIcon size={10} className="text-cyan-300" /> {role.label}
       </label>
@@ -163,10 +136,12 @@ function CustomField({ layer, role, value, onTextChange, onImageChange, onFocus,
         style={{ background: 'rgba(77,208,255,0.04)', border: '1px dashed rgba(77,208,255,0.3)' }}>
         {value ? (
           <>
-            <img src={value} alt={role.label}
+            <img
+              src={value} alt={role.label}
               className={clsx('w-10 h-10 object-cover flex-shrink-0',
                 role.shape === 'circle' ? 'rounded-full' : 'rounded-lg')}
-              style={{ border: '1px solid rgba(77,208,255,0.3)' }} />
+              style={{ border: '1px solid rgba(77,208,255,0.3)' }}
+            />
             <span className="text-white/60">Đã thay ảnh · click để đổi</span>
           </>
         ) : (
@@ -245,7 +220,7 @@ function PayGate({ open, fee, balance, onCancel, onConfirm, hasUser }) {
   )
 }
 
-// ── Format picker dropdown (for paid downloads) ───────────────────────
+// ── Format picker dropdown ─────────────────────────────────────────────
 function FormatMenu({ open, onClose, onPick }) {
   if (!open) return null
   return (
@@ -256,9 +231,9 @@ function FormatMenu({ open, onClose, onPick }) {
         className="absolute right-0 mt-2 w-56 rounded-xl p-1 z-50"
         style={{ background: 'rgba(14,14,24,0.98)', border: '1px solid rgba(255,255,255,0.1)' }}
       >
-        {EXPORT_FORMATS.map((f, i) => (
+        {EXPORT_FORMATS.map((f) => (
           <button
-            key={i}
+            key={f.id}
             onClick={() => { onClose(); onPick(f) }}
             className="w-full flex items-start gap-2 px-3 py-2 rounded-lg text-left hover:bg-white/[0.06]"
           >
@@ -275,22 +250,21 @@ function FormatMenu({ open, onClose, onPick }) {
 }
 
 // ── Main page ─────────────────────────────────────────────────────────
-export default function PhotopeaCustomerPage() {
+export default function PsdCustomerPage() {
   const { productId } = useParams()
   const navigate = useNavigate()
   const product = useShopStore((s) => s.getProduct(productId))
-  const tplId = product?.photopeaTemplateId
-  const template = usePhotopeaStore((s) => tplId ? s.getTemplate(tplId) : null)
+  const tplId = product?.psdTemplateId
+  const template = usePsdStore((s) => tplId ? s.getTemplate(tplId) : null)
+  const fontStore = useFontStore()
 
   const { toast, isOwned } = useAppStore()
   const { user, deductBalance, hasExportPaid, markExportPaid } = useAuthStore()
   const isAdmin = useAuthStore((s) => s.isAdmin())
 
-  const frameRef = useRef(null)
-  const [photopeaReady, setPhotopeaReady] = useState(false)
-  const [layers, setLayers] = useState(template?.layers || [])
-  // values are seeded from localStorage on first render so a reload
-  // restores the customer's in-progress edits.
+  const previewCanvasRef = useRef(null)
+  const offscreenCanvasRef = useRef(null) // full-resolution; for export
+
   const [values, setValues] = useState(() => loadValues(user?.id, productId))
   const [busy, setBusy] = useState(false)
   const [busyMsg, setBusyMsg] = useState('')
@@ -302,49 +276,21 @@ export default function PhotopeaCustomerPage() {
   const paid = isAdmin || fee === 0 || hasExportPaid(productId)
 
   const [showPayModal, setShowPayModal] = useState(false)
-  const [pendingFormat, setPendingFormat] = useState(null) // format requested before pay gate
+  const [pendingFormat, setPendingFormat] = useState(null)
   const [showFormatMenu, setShowFormatMenu] = useState(false)
 
-  // Auto-save customer values whenever they change.
+  // Auto-save values to localStorage on every change so a reload
+  // restores in-progress edits.
   useEffect(() => {
     if (!productId) return
     saveValues(user?.id, productId, values)
   }, [values, user?.id, productId])
 
-  // Re-apply persisted values to Photopea once the iframe is ready and
-  // the layer list has loaded. This makes a reload feel seamless.
-  const replayedRef = useRef(false)
-  useEffect(() => {
-    if (replayedRef.current) return
-    if (!photopeaReady || !layers?.length) return
-    if (!values || Object.keys(values).length === 0) {
-      replayedRef.current = true
-      return
-    }
-    let cancelled = false
-    ;(async () => {
-      replayedRef.current = true
-      for (const layer of layers) {
-        const role = detectLayerRole(layer.name)
-        if (!role) continue
-        if (template?.locks?.[layer.name]) continue
-        const v = values[role.role]
-        if (v == null || v === '') continue
-        try {
-          if (role.type === 'text') {
-            await frameRef.current?.run(scriptReplaceText(layer.name, v))
-          } else if (typeof v === 'string' && v.startsWith('data:image')) {
-            await frameRef.current?.run(scriptReplaceImage(layer.name, v))
-          }
-          if (cancelled) return
-        } catch (e) { /* ignore */ }
-      }
-    })()
-    return () => { cancelled = true }
-  }, [photopeaReady, layers, values, template])
-
-  // Pre-register custom fonts shipped with the template — registers them
-  // with the host browser so the iframe (and any export) sees them.
+  // Register the template's bundled fonts with the host browser, so
+  // the renderer can call ctx.font = "<size>px <family>" and the
+  // glyphs come out in the right typeface. Idempotent — re-running
+  // the effect just re-adds the same FontFace, which document.fonts
+  // de-dupes internally.
   useEffect(() => {
     if (!template?.fonts?.length) return
     template.fonts.forEach(async (f) => {
@@ -354,162 +300,135 @@ export default function PhotopeaCustomerPage() {
         const face = new FontFace(f.family, buf)
         await face.load()
         document.fonts.add(face)
-      } catch (e) { /* ignore */ }
+      } catch { /* ignore */ }
     })
   }, [template])
 
-  // Editable fields = layers with a known role and not locked. Memo so
-  // re-renders don't churn — derived from layers + template.locks.
+  // Editable layers = those with a known role and not locked.
   const editableLayers = useMemo(() => {
-    return (layers || []).filter((l) => {
-      if (isLockLayerName(l.name)) return false
-      if (template?.locks?.[l.name]) return false
-      return !!detectLayerRole(l.name)
+    if (!template?.layers) return []
+    return template.layers.filter((L) => {
+      if (isLockLayerName(L.name)) return false
+      if (template.locks?.[L.name]) return false
+      return !!detectLayerRole(L.name)
     })
-  }, [layers, template])
+  }, [template])
 
   // Resolve display label honouring admin overrides.
   const labelFor = useCallback((role) => {
     return template?.customLabels?.[role.role] || role.label
   }, [template])
 
-  // ── Photopea ready handler ─────────────────────────────────────────
-  // Convert the persisted data URL back into an ArrayBuffer and post
-  // it to the iframe. This works for any PSD size, unlike the old
-  // approach which embedded the data URL into the iframe URL hash.
-  const refreshLayers = useCallback(async () => {
-    if (!frameRef.current) return
-    const { echoes } = await frameRef.current.run(SCRIPT_LIST_LAYERS)
-    const echo = echoes.find((s) => s.startsWith('LAYERS:'))
-    if (echo) setLayers(JSON.parse(echo.slice('LAYERS:'.length)))
-  }, [])
-
-  const openTemplatePsd = useCallback(async () => {
-    if (!frameRef.current || !template?.psdDataUrl) return
-    try {
-      setBusy(true); setBusyMsg('Đang mở PSD trong Photopea…')
-      await frameRef.current.loadPsd(template.psdDataUrl)
-      await refreshLayers()
-    } catch (e) {
-      console.error(e)
-      toast(e?.message || 'Không mở được PSD', 'error')
-    } finally {
-      setBusy(false); setBusyMsg('')
+  // Build the renderer's `overrides` object from the customer's
+  // form values. We map by *layer name* so layers that share the
+  // same role (e.g. duplicates in the PSD) all receive the same
+  // override.
+  const overrides = useMemo(() => {
+    if (!template?.layers) return {}
+    const out = {}
+    for (const L of template.layers) {
+      const role = detectLayerRole(L.name)
+      if (!role) continue
+      const v = values[role.role]
+      if (v == null || v === '') continue
+      if (role.type === 'text') {
+        out[L.name] = { text: String(v) }
+      } else if (typeof v === 'string' && v.startsWith('data:image')) {
+        out[L.name] = { imageDataUrl: v }
+      }
     }
-  }, [template, refreshLayers, toast])
+    return out
+  }, [template, values])
 
-  const handleFrameReady = useCallback(() => {
-    setPhotopeaReady(true)
-    openTemplatePsd()
-  }, [openTemplatePsd])
-
-  // ── Layer focus ────────────────────────────────────────────────────
-  // Click a field → the matching layer becomes activeLayer in Photopea
-  // (so the user can see exactly what they're editing).
-  const focusLayer = useCallback(async (layerName, role) => {
-    setActiveRole(role)
-    if (!frameRef.current || !photopeaReady) return
-    try { await frameRef.current.run(scriptSelectLayer(layerName)) }
-    catch (e) { /* harmless */ }
-  }, [photopeaReady])
+  // Keep the on-screen preview in sync with overrides.
+  useEffect(() => {
+    if (!template || !previewCanvasRef.current) return
+    let cancelled = false
+    ;(async () => {
+      try {
+        await renderTemplateToCanvas(
+          { width: template.width, height: template.height, layers: template.layers },
+          overrides,
+          { target: previewCanvasRef.current },
+        )
+      } catch (err) {
+        if (!cancelled) console.warn('preview render failed', err)
+      }
+    })()
+    return () => { cancelled = true }
+  }, [template, overrides])
 
   // ── Edit handlers ──────────────────────────────────────────────────
-  const handleTextEdit = useCallback(async (layerName, role, text) => {
-    setValues((prev) => ({ ...prev, [role]: text }))
-    if (!frameRef.current || !photopeaReady) return
-    try {
-      await frameRef.current.run(scriptReplaceText(layerName, text))
-    } catch (e) { console.warn('text edit failed', e) }
-  }, [photopeaReady])
+  const handleTextEdit = useCallback((roleId, text) => {
+    setActiveRole(roleId)
+    setValues((prev) => ({ ...prev, [roleId]: text }))
+  }, [])
 
-  const handleImageEdit = useCallback(async (layerName, role, dataUrl) => {
-    setValues((prev) => ({ ...prev, [role]: dataUrl }))
-    if (!frameRef.current || !photopeaReady) return
-    try {
-      setBusy(true); setBusyMsg('Đang thay ảnh trong Photopea…')
-      await frameRef.current.run(scriptReplaceImage(layerName, dataUrl))
-      await refreshLayers()
-    } catch (e) { console.warn('image edit failed', e) }
-    finally { setBusy(false); setBusyMsg('') }
-  }, [photopeaReady, refreshLayers])
+  const handleImageEdit = useCallback((roleId, dataUrl) => {
+    setActiveRole(roleId)
+    setValues((prev) => ({ ...prev, [roleId]: dataUrl }))
+  }, [])
 
   // ── Reset ──────────────────────────────────────────────────────────
-  const handleReset = useCallback(async () => {
-    if (!frameRef.current || !template?.psdDataUrl) return
-    try {
-      setBusy(true); setBusyMsg('Đang reset về bản gốc…')
-      // loadPsd handles closing existing docs internally.
-      await frameRef.current.loadPsd(template.psdDataUrl)
-      await refreshLayers()
-      setValues({})
-      saveValues(user?.id, productId, {})
-      replayedRef.current = true // already at the original — no replay needed
-      toast('Đã reset về bản gốc', 'success')
-    } catch (e) {
-      console.error(e); toast('Không reset được', 'error')
-    } finally { setBusy(false); setBusyMsg('') }
-  }, [template, refreshLayers, toast, user?.id, productId])
-
-  // ── Export internals ───────────────────────────────────────────────
-  // Photopea's saveToOE only knows png/jpg/psd. WebP is post-processed
-  // by re-encoding the PNG buffer through canvas.
-  const exportFromPhotopea = useCallback(async (format) => {
-    if (!frameRef.current) throw new Error('Photopea chưa sẵn sàng')
-    // For WebP we ask Photopea for PNG, then re-encode.
-    const ppFormat = format.id === 'png' && format.reencode === 'webp' ? 'png'
-      : format.id
-    const { buffers } = await frameRef.current.run(scriptExport(ppFormat))
-    const buf = buffers[0]
-    if (!buf) throw new Error('Photopea không trả về dữ liệu')
-    return { buffer: buf, mime: ppFormat === 'jpg' ? 'image/jpeg' : 'image/png' }
-  }, [])
+  const handleReset = useCallback(() => {
+    setValues({})
+    saveValues(user?.id, productId, {})
+    toast('Đã reset về bản gốc', 'success')
+  }, [toast, user?.id, productId])
 
   const baseFileName = useCallback(() => {
     return (product?.title || 'nova').toLowerCase().replace(/\s+/g, '-')
   }, [product])
 
-  // ── Free preview (watermarked) ─────────────────────────────────────
+  // Render to a fresh, full-resolution offscreen canvas. The on-screen
+  // preview canvas is bound by CSS max-* rules; for export we always
+  // need the doc-size pixel buffer.
+  const renderForExport = useCallback(async () => {
+    const canvas = offscreenCanvasRef.current || document.createElement('canvas')
+    offscreenCanvasRef.current = canvas
+    await renderTemplateToCanvas(
+      { width: template.width, height: template.height, layers: template.layers },
+      overrides,
+      { target: canvas },
+    )
+    return canvas
+  }, [template, overrides])
+
+  // ── Free preview (watermarked PNG) ─────────────────────────────────
   const performPreviewExport = useCallback(async () => {
     if (!allowFreePreview) {
-      toast('Admin đã tắt chế độ xem thử miễn phí', 'warn')
-      return
+      toast('Admin đã tắt chế độ xem thử miễn phí', 'warn'); return
     }
     try {
       setBusy(true); setBusyMsg('Đang tạo bản xem thử có watermark…')
-      const fmt = EXPORT_FORMATS[0] // PNG
-      const { buffer, mime } = await exportFromPhotopea(fmt)
-      const wmBlob = await watermarkImageBuffer(buffer, mime, { text: watermarkText })
+      const canvas = await renderForExport()
+      const pngBlob = await canvasToBlob(canvas, 'image/png')
+      const buf = await pngBlob.arrayBuffer()
+      const wmBlob = await watermarkImageBuffer(buf, 'image/png', { text: watermarkText })
       downloadBlob(wmBlob, `${baseFileName()}-preview-${Date.now()}.png`)
       toast('Đã tải bản xem thử (có watermark)', 'success')
     } catch (e) {
       console.error(e); toast(e?.message || 'Lỗi khi xuất', 'error')
     } finally { setBusy(false); setBusyMsg('') }
-  }, [allowFreePreview, exportFromPhotopea, watermarkText, baseFileName, toast])
+  }, [allowFreePreview, renderForExport, watermarkText, baseFileName, toast])
 
-  // ── Paid clean export (any format) ─────────────────────────────────
+  // ── Paid clean export ──────────────────────────────────────────────
   const performPaidExport = useCallback(async (format) => {
     try {
       setBusy(true); setBusyMsg(`Đang xuất ${format.label}…`)
-      const { buffer, mime } = await exportFromPhotopea(format)
-      let outBlob
-      if (format.label === 'WebP') {
-        outBlob = await reencodeToMime(buffer, mime, 'image/webp')
-      } else {
-        outBlob = bufferToBlob(buffer, format.mime)
-      }
-      downloadBlob(outBlob, `${baseFileName()}-${Date.now()}.${format.ext}`)
+      const canvas = await renderForExport()
+      const blob = await canvasToBlob(canvas, format.mime)
+      downloadBlob(blob, `${baseFileName()}-${Date.now()}.${format.ext}`)
       toast(`Đã tải ${format.label}`, 'success')
     } catch (e) {
       console.error(e); toast(e?.message || 'Lỗi khi xuất', 'error')
     } finally { setBusy(false); setBusyMsg('') }
-  }, [exportFromPhotopea, baseFileName, toast])
+  }, [renderForExport, baseFileName, toast])
 
-  // ── Click handlers ─────────────────────────────────────────────────
+  // Pay gate: clicking the download button picks a format then
+  // either exports immediately (if already paid) or pops the modal.
   const handleDownloadClick = useCallback((format) => {
-    if (paid) {
-      performPaidExport(format)
-      return
-    }
+    if (paid) { performPaidExport(format); return }
     setPendingFormat(format)
     setShowPayModal(true)
   }, [paid, performPaidExport])
@@ -552,14 +471,14 @@ export default function PhotopeaCustomerPage() {
       </div>
     )
   }
-  if (!template?.psdDataUrl) {
+  if (!template || !template.layers?.length) {
     return (
       <div className="flex flex-col items-center justify-center min-h-screen gap-4 text-center px-4"
         style={{ background: '#0a0a14' }}>
         <AlertCircle size={32} className="text-amber-400" />
         <h2 className="font-display text-xl font-bold text-white">Template không khả dụng</h2>
         <p className="text-sm text-white/50 max-w-sm">
-          Admin chưa đăng PSD cho sản phẩm này, hoặc dung lượng quá lớn để khôi phục sau khi reload trình duyệt.
+          Admin chưa đăng PSD cho sản phẩm này, hoặc dữ liệu đã bị trình duyệt loại bỏ vì quá lớn để lưu trữ. Hãy nhờ admin đăng lại.
         </p>
         <button onClick={() => navigate('/shop')}
           className="px-4 py-2 rounded-xl text-sm bg-white/10 text-white">
@@ -568,6 +487,13 @@ export default function PhotopeaCustomerPage() {
       </div>
     )
   }
+
+  // Locked layers info — used to show a subtle list at the bottom of
+  // the form so the customer understands what they can't change.
+  const lockedNames = Array.from(new Set([
+    ...Object.keys(template.locks || {}),
+    ...template.layers.filter((L) => isLockLayerName(L.name)).map((L) => L.name),
+  ]))
 
   return (
     <div className="flex flex-col" style={{ height: '100vh', background: '#0a0a14' }}>
@@ -580,7 +506,7 @@ export default function PhotopeaCustomerPage() {
         </button>
         <div className="flex-1 min-w-0">
           <p className="text-[10px] text-white/30 uppercase tracking-widest flex items-center gap-1.5">
-            Photopea editor
+            PSD editor
             {paid && (
               <span className="px-1.5 py-0.5 rounded text-[9px] font-bold"
                 style={{ background: 'rgba(43,242,192,0.15)', color: 'rgba(43,242,192,1)', border: '1px solid rgba(43,242,192,0.3)' }}>
@@ -596,20 +522,18 @@ export default function PhotopeaCustomerPage() {
           <RotateCcw size={12} /> Reset
         </button>
 
-        {/* Free preview button (only if allowed and not yet paid) */}
         {!paid && allowFreePreview && (
-          <button onClick={performPreviewExport} disabled={busy || !photopeaReady}
+          <button onClick={performPreviewExport} disabled={busy}
             className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs disabled:opacity-40"
             style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.12)', color: 'white' }}>
             <Eye size={12} /> Xem thử
           </button>
         )}
 
-        {/* Download button — opens format menu */}
         <div className="relative">
           <button
             onClick={() => setShowFormatMenu((v) => !v)}
-            disabled={busy || !photopeaReady}
+            disabled={busy}
             className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold disabled:opacity-40"
             style={{ background: 'linear-gradient(135deg,#6e4bff,#4dd0ff)', color: '#fff' }}>
             <Download size={13} />
@@ -631,7 +555,7 @@ export default function PhotopeaCustomerPage() {
           <div className="px-4 py-3 border-b" style={{ borderColor: 'rgba(255,255,255,0.06)' }}>
             <h2 className="text-xs font-semibold text-white/60 uppercase tracking-wider">Tuỳ chỉnh</h2>
             <p className="text-[10px] text-white/30 mt-0.5">
-              {editableLayers.length} layer có thể chỉnh · {Object.keys(template.locks || {}).length} layer đã khoá
+              {editableLayers.length} layer có thể chỉnh · {lockedNames.length} layer đã khoá
             </p>
             {!paid && allowFreePreview && (
               <p className="text-[10px] mt-2 leading-relaxed"
@@ -649,7 +573,6 @@ export default function PhotopeaCustomerPage() {
               editableLayers.map((layer) => {
                 const role = detectLayerRole(layer.name)
                 if (!role) return null
-                // Apply admin label override.
                 const displayedRole = { ...role, label: labelFor(role) }
                 return (
                   <div key={layer.id || layer.name}
@@ -661,21 +584,19 @@ export default function PhotopeaCustomerPage() {
                       layer={layer}
                       role={displayedRole}
                       value={values[role.role]}
-                      locked={false}
-                      onTextChange={(t) => handleTextEdit(layer.name, role.role, t)}
-                      onImageChange={(u) => handleImageEdit(layer.name, role.role, u)}
-                      onFocus={() => focusLayer(layer.name, role.role)}
+                      onTextChange={(t) => handleTextEdit(role.role, t)}
+                      onImageChange={(u) => handleImageEdit(role.role, u)}
                     />
                   </div>
                 )
               })
             )}
-            {/* Locked-layer hint list */}
-            {Object.keys(template.locks || {}).length > 0 && (
+            {/* Locked-layer hint */}
+            {lockedNames.length > 0 && (
               <div className="pt-3 border-t" style={{ borderColor: 'rgba(255,255,255,0.06)' }}>
                 <p className="text-[10px] text-white/30 uppercase tracking-wider mb-2">Layer admin đã khoá</p>
                 <div className="space-y-1">
-                  {Object.keys(template.locks || {}).map((name) => {
+                  {lockedNames.map((name) => {
                     const role = detectLayerRole(name)
                     return (
                       <div key={name}
@@ -694,11 +615,20 @@ export default function PhotopeaCustomerPage() {
           </div>
         </aside>
 
-        {/* Photopea iframe */}
-        <main className="flex-1 min-w-0 relative">
-          <PhotopeaFrame
-            ref={frameRef}
-            onReady={handleFrameReady}
+        {/* Preview canvas */}
+        <main className="flex-1 min-w-0 relative flex items-center justify-center p-6"
+          style={{
+            background:
+              'repeating-conic-gradient(rgba(255,255,255,0.04) 0% 25%, transparent 0% 50%) 0 0 / 20px 20px, #0a0a14',
+          }}>
+          <canvas
+            ref={previewCanvasRef}
+            style={{
+              maxWidth: '100%', maxHeight: '100%',
+              width: 'auto', height: 'auto',
+              boxShadow: '0 12px 36px rgba(0,0,0,0.45), 0 0 0 1px rgba(255,255,255,0.06)',
+              borderRadius: 8,
+            }}
           />
           {busy && (
             <div className="absolute inset-0 flex items-center justify-center"
