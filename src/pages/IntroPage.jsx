@@ -1,25 +1,11 @@
 import { motion } from 'framer-motion'
 import { Link } from 'react-router-dom'
 import {
-  Sparkles, Layers, LayoutGrid, Scissors, ShoppingBag, Gift,
+  Sparkles, Scissors, ShoppingBag, FolderOpen,
   ArrowRight, Play, Zap, Code2, Palette, MousePointer2,
 } from 'lucide-react'
 
 const FEATURES = [
-  {
-    icon: Layers,
-    title: 'PSD Editor trực tuyến',
-    desc: 'Mở, chỉnh sửa file PSD trực tiếp trên trình duyệt. Hỗ trợ layer, clipping mask, smart object, blend mode.',
-    color: '#6e4bff',
-    link: '/psd-editor',
-  },
-  {
-    icon: LayoutGrid,
-    title: 'Ghép ảnh Collage',
-    desc: 'Ghép nhiều ảnh với 6+ bố cục sẵn. Tùy chỉnh gap, bo góc, màu nền. Bot AI gợi ý thiết kế.',
-    color: '#ec4899',
-    link: '/collage',
-  },
   {
     icon: Scissors,
     title: 'Xóa nền AI',
@@ -30,16 +16,30 @@ const FEATURES = [
   {
     icon: ShoppingBag,
     title: 'Cửa hàng thiết kế',
-    desc: 'Mua thumbnail, logo, banner chất lượng cao. Chỉnh sửa trực tiếp sau khi mua với Customer Editor.',
+    desc: 'Mua thumbnail, logo, banner chất lượng cao — tải về sử dụng ngay.',
     color: '#10b981',
     link: '/shop',
+  },
+  {
+    icon: FolderOpen,
+    title: 'Kho tài nguyên',
+    desc: '10,000+ file PSD, icon, mockup miễn phí. Cập nhật liên tục mỗi tuần.',
+    color: '#8b5cf6',
+    link: '/resources',
+  },
+  {
+    icon: Code2,
+    title: 'Source Code',
+    desc: 'Mua bộ code template, layout, ứng dụng nhỏ — đầy đủ tài liệu.',
+    color: '#f59e0b',
+    link: '/source',
   },
 ]
 
 const STEPS = [
   { num: '01', title: 'Đăng ký / Đăng nhập', desc: 'Tạo tài khoản miễn phí để bắt đầu sử dụng tất cả tính năng', icon: MousePointer2 },
-  { num: '02', title: 'Chọn công cụ', desc: 'PSD Editor, Ghép ảnh, Xóa nền AI, hoặc Cửa hàng thiết kế', icon: Palette },
-  { num: '03', title: 'Sáng tạo & Xuất', desc: 'Chỉnh sửa theo ý muốn, export PNG/JPG/WebP chất lượng cao', icon: Zap },
+  { num: '02', title: 'Chọn công cụ', desc: 'Xóa nền AI, Cửa hàng thiết kế hoặc Kho tài nguyên', icon: Palette },
+  { num: '03', title: 'Tải về & Sử dụng', desc: 'Tải file chất lượng cao về máy và dùng cho dự án của bạn', icon: Zap },
 ]
 
 export default function IntroPage() {
@@ -163,8 +163,8 @@ export default function IntroPage() {
         <div className="grid sm:grid-cols-4 gap-3">
           {[
             { name: 'React 18', desc: 'UI Framework', color: 'text-cyan-400' },
-            { name: 'Konva.js', desc: 'Canvas Rendering', color: 'text-emerald-400' },
-            { name: '@webtoon/psd', desc: 'PSD Parser', color: 'text-violet-400' },
+            { name: 'Vite', desc: 'Build Tool', color: 'text-emerald-400' },
+            { name: 'Tailwind CSS', desc: 'Styling', color: 'text-violet-400' },
             { name: 'Zustand', desc: 'State Management', color: 'text-amber-400' },
           ].map(t => (
             <div key={t.name} className="p-3 rounded-xl bg-white/[0.03] border border-white/[0.05]">

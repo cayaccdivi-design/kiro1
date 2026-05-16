@@ -65,6 +65,16 @@ export const usePhotopeaStore = create((set, get) => ({
       exportFee: typeof t.exportFee === 'number' ? t.exportFee : 30,
       fonts: t.fonts || [],
       thumbnail: t.thumbnail || null,
+      // Admin-customisable display labels for editable fields, keyed by
+      // role id (e.g. text_title → "Tên nhân vật"). Falls back to the
+      // canonical label from layerNaming.LAYER_ROLES when missing.
+      customLabels: t.customLabels || {},
+      // Watermark settings used by the free-preview export. The customer
+      // editor reads `watermarkText` to render a tiled diagonal mark.
+      watermarkText: t.watermarkText || 'NOVA · PREVIEW',
+      // Allow free preview export at all? (default true.) If false, the
+      // user must pay before any export — even watermarked ones.
+      allowFreePreview: t.allowFreePreview !== false,
       createdAt: new Date().toISOString(),
     }
     if (t.psdBuffer) photopeaPsdMap.set(id, t.psdBuffer)
