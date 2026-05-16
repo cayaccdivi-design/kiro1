@@ -156,6 +156,21 @@ ${FIND_LAYER_FN}
 `
 }
 
+// ─── Select a layer by name (used for "click to focus" UX) ────────────
+// Sets activeLayer so the Photopea UI scrolls / highlights it. We also
+// echo a small ack so the caller can detect "layer not found".
+export function scriptSelectLayer(layerName) {
+  return `
+${FIND_LAYER_FN}
+(function() {
+  var L = findLayerByName(app.activeDocument, ${JSON.stringify(layerName)});
+  if (!L) { app.echoToOE('SEL_ERR:notfound'); return; }
+  try { app.activeDocument.activeLayer = L; app.echoToOE('SEL_OK:' + L.name); }
+  catch (e) { app.echoToOE('SEL_ERR:' + e); }
+})();
+`
+}
+
 // ─── Toggle layer visibility ───────────────────────────────────────────
 export function scriptSetVisibility(layerName, visible) {
   return `

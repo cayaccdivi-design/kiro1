@@ -712,16 +712,11 @@ function ProductModal({ product, onClose, isAdmin, onEditClick, isStoreProduct }
                 ✦ Mở trong Photopea
               </button>
             )}
-            {owned && product.editableFields?.length > 0 && (
+            {owned && product.photopeaTemplateId && product.editableFields?.length > 0 && (
               <button
                 onClick={() => {
                   onClose()
-                  // Photopea-template products get the dedicated editor that
-                  // talks to the embedded Photopea iframe; everything else
-                  // falls back to the legacy Konva-based customer editor.
-                  navigate(product.photopeaTemplateId
-                    ? `/photopea/${product.id}`
-                    : `/editor/${product.id}`)
+                  navigate(`/photopea/${product.id}`)
                 }}
                 className="w-full btn-primary py-3 text-sm flex items-center justify-center gap-2"
               >

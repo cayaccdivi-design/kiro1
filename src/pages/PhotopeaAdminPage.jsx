@@ -116,6 +116,14 @@ export default function PhotopeaAdminPage() {
   const [productDesc, setProductDesc] = useState('')
   const [productCategory, setProductCategory] = useState('thumbnail')
 
+  // Per-field display labels — admin overrides the canonical role label
+  // (e.g. text_title → "Tên nhân vật"). Stored as { [roleId]: string }.
+  const [customLabels, setCustomLabels] = useState({})
+  // Watermark for the free-preview export. Empty string disables.
+  const [watermarkText, setWatermarkText] = useState('NOVA · PREVIEW')
+  // Whether the customer can take a watermarked free download at all.
+  const [allowFreePreview, setAllowFreePreview] = useState(true)
+
   // Custom fonts uploaded for this template
   const [customFonts, setCustomFonts] = useState([]) // [{ family, dataUrl }]
 
@@ -297,6 +305,9 @@ export default function PhotopeaAdminPage() {
         exportFee: Math.max(0, Number(exportFee) || 0),
         fonts: customFonts,
         thumbnail,
+        customLabels,
+        watermarkText: watermarkText.trim(),
+        allowFreePreview,
       })
 
       // Register a matching shop product so customers can buy / browse.
@@ -321,7 +332,7 @@ export default function PhotopeaAdminPage() {
             const r = detectLayerRole(l.name)
             return {
               role: r.role,
-              label: r.label,
+              label: customLabels[r.role] || r.label,
               type: r.type,
               defaultValue: l.text || '',
             }
@@ -338,6 +349,7 @@ export default function PhotopeaAdminPage() {
   }, [
     psdDataUrl, psdBuffer, layers, locks, customFonts, templateName, exportFee,
     productPrice, productDesc, productCategory,
+    customLabels, watermarkText, allowFreePreview,
     createTemplate, addProduct, navigate, toast,
   ])
 
@@ -488,6 +500,92 @@ export default function PhotopeaAdminPage() {
                   hint="Bấm khoá để chặn khách chỉnh sửa layer. Layer tên lock_* luôn khoá."
                 />
               </div>
+            </div>
+
+            {/* Field labels — admin-customisable labels for each editable layer */}
+            <div className="rounded-2xl p-4" style={CARD}>
+              <div className="flex items-center gap-2 mb-3">
+                <Type size={14} className="text-violet-300" />
+                <h3 className="text-sm font-semibold text-white">Nhãn hiển thị</h3>
+                <span className="text-[10px] text-white/40 ml-auto">cho khách</span>
+              </div>
+              {(() => {
+                // Editable layers = those with a known role, not locked.
+                const editable = layers.filter(
+                  (l) => detectLayerRole(l.name) && !locks[l.name] && !isLockLayerName(l.name),
+                )
+                // De-dupe by role id (PSD may repeat the same role layer).
+                const seen = new Set()
+                const fields = []
+                for (const l of editable) {
+                  const r = detectLayerRole(l.name)
+                  if (!r || seen.has(r.role)) continue
+                  seen.add(r.role)
+                  fields.push({ role: r, layer: l })
+                }
+                if (fields.length === 0) {
+                  return (
+                    <p className="text-[11px] text-white/35 leading-relaxed">
+                      Chưa có layer nào có role chuẩn. Đặt tên layer như&nbsp;
+                      <code className="text-cyan-300">text_title</code>, <code className="text-cyan-300">nvat_png</code>… để khách có thể chỉnh sửa.
+                    </p>
+                  )
+                }
+                return (
+                  <div className="space-y-2 max-h-[260px] overflow-y-auto pr-1">
+                    {fields.map(({ role, layer }) => (
+                      <div key={role.role} className="flex items-center gap-2">
+                        <span className="text-[10px] font-mono text-white/40 w-20 flex-shrink-0 truncate"
+                          title={layer.name}>
+                          {role.role}
+                        </span>
+                        <input
+                          className="flex-1 min-w-0 bg-white/[0.05] border border-white/[0.1] rounded-lg px-2 py-1.5 text-xs text-white outline-none"
+                          placeholder={role.label}
+                          value={customLabels[role.role] ?? ''}
+                          onChange={(e) =>
+                            setCustomLabels((p) => ({ ...p, [role.role]: e.target.value }))
+                          }
+                        />
+                      </div>
+                    ))}
+                    <p className="text-[10px] text-white/30 leading-relaxed pt-1">
+                      Để trống để dùng nhãn mặc định ({fields[0].role.label}…).
+                    </p>
+                  </div>
+                )
+              })()}
+            </div>
+
+            {/* Watermark + free preview policy */}
+            <div className="rounded-2xl p-4" style={CARD}>
+              <div className="flex items-center gap-2 mb-3">
+                <Sparkles size={14} className="text-amber-300" />
+                <h3 className="text-sm font-semibold text-white">Watermark & Preview</h3>
+              </div>
+              <label className="flex items-center gap-2 mb-3 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={allowFreePreview}
+                  onChange={(e) => setAllowFreePreview(e.target.checked)}
+                  className="accent-violet-400"
+                />
+                <span className="text-xs text-white/70">Cho phép tải xem thử miễn phí (có watermark)</span>
+              </label>
+              <label className="text-[10px] text-white/40 uppercase tracking-wider block mb-1">
+                Nội dung watermark
+              </label>
+              <input
+                disabled={!allowFreePreview}
+                className="w-full bg-white/[0.05] border border-white/[0.1] rounded-xl px-3 py-2 text-xs text-white outline-none disabled:opacity-40"
+                placeholder="NOVA · PREVIEW"
+                value={watermarkText}
+                onChange={(e) => setWatermarkText(e.target.value)}
+              />
+              <p className="text-[10px] text-white/30 mt-3 leading-relaxed">
+                Khách bấm "Xem thử" sẽ nhận file PNG có watermark dán lặp đường chéo.
+                Bấm "Tải về (trả phí)" sẽ nhận file sạch và unlock vĩnh viễn cho mọi định dạng.
+              </p>
             </div>
 
             {/* Fonts */}

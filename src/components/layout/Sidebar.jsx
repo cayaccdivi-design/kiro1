@@ -3,8 +3,8 @@ import { motion, AnimatePresence } from 'framer-motion'
 import {
   LayoutDashboard, ShoppingBag, Gift, Scissors,
   FolderOpen, LogOut, X, ChevronLeft, ChevronRight,
-  Sparkles, Layers, LayoutGrid, Bell, Code2, BookOpen,
-  ImagePlus, Shield, Download,
+  Sparkles, Layers, Bell, Code2, BookOpen,
+  Download,
 } from 'lucide-react'
 import { useAuthStore } from '../../store/useAuthStore'
 import { useAppStore } from '../../store/useAppStore'
@@ -15,14 +15,10 @@ const NAV_ITEMS = [
   { to: '/',                icon: LayoutDashboard, label: 'Dashboard',      end: true },
   { to: '/shop',            icon: ShoppingBag,     label: 'Cửa hàng' },
   { to: '/remove-bg',       icon: Scissors,        label: 'Xóa nền AI',     badge: 'AI' },
-  { to: '/composer',        icon: ImagePlus,       label: 'AI Composer',    badge: 'AI' },
-  { to: '/collage',         icon: LayoutGrid,      label: 'Ghép ảnh',       badge: 'NEW' },
   { to: '/resources',       icon: FolderOpen,      label: 'Tài nguyên' },
   { to: '/source',          icon: Code2,           label: 'Mã nguồn' },
   { to: '/downloads',       icon: Download,        label: 'Đã tải',         loginOnly: true },
-  { to: '/psd-editor',      icon: Layers,          label: 'PSD Editor',     badge: 'NEW', adminOnly: true },
   { to: '/admin/photopea',  icon: Layers,          label: 'Photopea Admin', badge: 'NEW', adminOnly: true },
-  { to: '/admin/composer',  icon: Shield,          label: 'Admin Composer', badge: 'ADMIN', adminOnly: true },
 ]
 
 // Utility cluster — secondary destinations rendered as small icon buttons
